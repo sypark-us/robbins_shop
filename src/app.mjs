@@ -71,7 +71,7 @@ export function createApp(opts = {}) {
     };
     return ctx;
   }
-  const page = (ctx, title, body, extra = {}) => { ctx.persist(); return html(ctx.res, layout({ title, body, ctx, ...extra })); };
+  const page = (ctx, title, body, extra = {}) => { ctx.persist(); return html(ctx.res, layout({ title, body, ctx, ...extra }), 200, { 'Cache-Control': 'no-store' }); };
   const go = (ctx, location) => { ctx.persist(); return redirect(ctx.res, location); };
   const csrfCheck = (ctx, fields) => { if (!fields || fields._csrf !== ctx.csrf) throw new HttpError(403, 'Invalid or expired form token. Please go back and try again.'); };
   const requireAdmin = (ctx) => {
