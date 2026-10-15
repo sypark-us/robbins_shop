@@ -96,6 +96,10 @@ const en = {
   'err.admin_only': 'Admin access only.', 'err.too_large': 'Upload too large', 'err.generic': 'Something went wrong', 'err.generic_p': 'An unexpected error occurred. Please try again.',
   'err.csrf': 'Invalid or expired form token. Please go back and try again.', 'err.back': 'Back to shop', 'err.order_not_found': 'Order not found', 'err.order_paid': 'Order not found or already paid',
   'misc.shipping_item': 'Shipping', 'misc.tax_item': 'Sales tax',
+  'nav.currency': 'Currency', 'money.approx': 'Prices shown in {alt} are approximate. Payment is charged in {base}.',
+  'admin.currency_display': 'Currency display', 'admin.currency_display_help': 'Optionally let visitors view prices in a second currency. Prices are converted for display only; Stripe always charges the base currency above.',
+  'admin.alt_currency': 'Second display currency (ISO code, blank to disable)', 'admin.fx_rate': 'Exchange rate (1 {base} = ? {alt})', 'admin.fx_auto': 'Update the rate automatically every day (European Central Bank rates via frankfurter.app)',
+  'admin.fx_updated': 'Rate last updated: {when}', 'admin.fx_never': 'Rate not updated yet. Enter one manually or enable automatic updates.',
 };
 
 const ko = {
@@ -178,6 +182,10 @@ const ko = {
   'err.admin_only': '관리자만 접근할 수 있습니다.', 'err.too_large': '업로드 용량 초과', 'err.generic': '문제가 발생했습니다', 'err.generic_p': '예상치 못한 오류가 발생했습니다. 다시 시도해 주세요.',
   'err.csrf': '폼 토큰이 유효하지 않거나 만료되었습니다. 뒤로 가서 다시 시도해 주세요.', 'err.back': '쇼핑몰로 돌아가기', 'err.order_not_found': '주문을 찾을 수 없습니다', 'err.order_paid': '주문이 없거나 이미 결제되었습니다',
   'misc.shipping_item': '배송비', 'misc.tax_item': '세금',
+  'nav.currency': '통화', 'money.approx': '{alt} 가격은 참고용 환산 금액입니다. 실제 결제는 {base}로 청구됩니다.',
+  'admin.currency_display': '통화 표시', 'admin.currency_display_help': '방문자가 두 번째 통화로 가격을 볼 수 있게 합니다. 표시용 환산일 뿐이며 Stripe 결제는 항상 위의 기본 통화로 청구됩니다.',
+  'admin.alt_currency': '두 번째 표시 통화 (ISO 코드, 비우면 사용 안 함)', 'admin.fx_rate': '환율 (1 {base} = ? {alt})', 'admin.fx_auto': '환율을 매일 자동으로 갱신 (frankfurter.app의 유럽중앙은행 환율)',
+  'admin.fx_updated': '환율 마지막 갱신: {when}', 'admin.fx_never': '아직 환율이 갱신되지 않았습니다. 직접 입력하거나 자동 갱신을 켜세요.',
 };
 
 export const DICTS = { en, ko };

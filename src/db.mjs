@@ -56,6 +56,10 @@ export const DEFAULT_SETTINGS = {
   tagline: 'Computer parts, pre-loved goods and clothing',
   tagline_ko: '컴퓨터 부품, 중고 물품, 의류',
   currency: 'usd',
+  alt_currency: 'krw', // optional second display currency (prices are converted for display only)
+  fx_rate: '', // units of alt_currency per 1 unit of currency, e.g. 1350
+  fx_auto: '1', // refresh fx_rate daily from frankfurter.app (ECB rates)
+  fx_updated_at: '',
   tax_rate: '0', // percent, e.g. "8.25"
   shipping_flat_cents: '799',
   free_shipping_over_cents: '10000',

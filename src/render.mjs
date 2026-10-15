@@ -1,5 +1,5 @@
 // HTML rendering helpers: escaping, layout, small components. All user-facing text goes through ctx.t().
-import { formatMoney } from './cart.mjs';
+import { formatMoney, convertMinor } from './cart.mjs';
 import { statSync } from 'node:fs';
 import { t as translate, localeFor, LANGS } from './i18n.mjs';
 
@@ -11,6 +11,13 @@ export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&a
 export const attr = esc;
 export const nl2br = (s) => esc(s).replace(/\r?\n/g, '<br>');
 export const money = (cents, currency, lang = 'en') => formatMoney(cents, currency, localeFor(lang));
+/** Formats an amount for the visitor: converts base-currency amounts into the chosen display currency when one is active. */
+export function fmtMoney(ctx, cents, currency = ctx.settings.currency) {
+  const base = ctx.settings.currency, display = ctx.display || base, rate = Number(ctx.settings.fx_rate);
+  if (currency === base && display !== base && rate > 0) return formatMoney(convertMinor(cents, base, display, rate), display, localeFor(ctx.lang || 'en'));
+  return formatMoney(cents, currency, localeFor(ctx.lang || 'en'));
+}
+export const converting = (ctx) => !!ctx.display && ctx.display !== ctx.settings.currency && Number(ctx.settings.fx_rate) > 0;
 export const imgUrl = (filename) => (filename ? `/uploads/${encodeURIComponent(filename)}` : '/public/placeholder.svg');
 export const fmtDate = (iso, lang = 'en') => (iso ? new Date(iso.replace(' ', 'T') + (iso.endsWith('Z') ? '' : 'Z')).toLocaleString(localeFor(lang), { dateStyle: 'medium', timeStyle: 'short' }) : '');
 export const condLabel = (c, lang = 'en') => translate(lang, `cond.${c}`);
@@ -35,10 +42,10 @@ export const ICONS = {
   logo: '<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="currentColor"/><path d="M8 10h3.5l2.2 10h8.6l2-7H12.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="14.5" cy="24" r="1.6" fill="#fff"/><circle cx="21.5" cy="24" r="1.6" fill="#fff"/></svg>',
 };
 
-/** Builds a link to the current page with ?lang=xx. */
-function langHref(ctx, lang) {
+/** Builds a link to the current page with one query parameter changed. */
+function withParam(ctx, key, value) {
   const u = new URL(ctx.url?.href || 'http://x/');
-  u.searchParams.set('lang', lang);
+  u.searchParams.set(key, value);
   return u.pathname + u.search;
 }
 
@@ -49,11 +56,14 @@ export function layout({ title, body, ctx, admin = false, head = '', wide = fals
   const shop = esc(settings.shop_name || 'Shop');
   const freeOver = Number(settings.free_shipping_over_cents);
   const hasFree = settings.free_shipping_over_cents !== '' && Number.isFinite(freeOver) && freeOver > 0;
-  const announce = hasFree ? T('announce.free_over', { amount: money(freeOver, settings.currency, lang) }) : T('announce.secure');
+  const announce = hasFree ? T('announce.free_over', { amount: fmtMoney(ctx, freeOver) }) : T('announce.secure');
   const nav = admin
     ? `<a href="/admin">${T('nav.dashboard')}</a><a href="/admin/products">${T('nav.products')}</a><a href="/admin/orders">${T('nav.orders')}</a><a href="/admin/categories">${T('nav.categories')}</a><a href="/admin/settings">${T('nav.settings')}</a><a href="/" class="muted">${T('nav.view_shop')}</a>`
     : `<a href="/shop">${T('nav.shop_all')}</a>${ctx.categories?.slice(0, 5).map((c) => `<a href="/shop?cat=${attr(c.slug)}">${esc(cName(c, lang))}</a>`).join('') || ''}<a href="/shop?cond=used">${T('nav.preowned')}</a>`;
-  const langSwitch = `<div class="lang-switch" aria-label="${T('nav.language')}">${ICONS.globe}${Object.keys(LANGS).map((l) => `<a href="${attr(langHref(ctx, l))}" class="${l === lang ? 'current' : ''}" hreflang="${l}">${l === 'ko' ? '한국어' : 'EN'}</a>`).join('<span class="sep">|</span>')}</div>`;
+  const langSwitch = `<div class="lang-switch" aria-label="${T('nav.language')}">${ICONS.globe}${Object.keys(LANGS).map((l) => `<a href="${attr(withParam(ctx, 'lang', l))}" class="${l === lang ? 'current' : ''}" hreflang="${l}">${l === 'ko' ? '한국어' : 'EN'}</a>`).join('<span class="sep">|</span>')}</div>`;
+  const alt = (settings.alt_currency || '').toLowerCase();
+  const curSwitch = !admin && alt && alt !== settings.currency && Number(settings.fx_rate) > 0
+    ? `<div class="lang-switch cur-switch" aria-label="${T('nav.currency')}">${[settings.currency, alt].map((c) => `<a href="${attr(withParam(ctx, 'cur', c))}" class="${c === (ctx.display || settings.currency) ? 'current' : ''}">${esc(c.toUpperCase())}</a>`).join('<span class="sep">|</span>')}</div>` : '';
   const account = user
     ? `<a href="${user.role === 'admin' ? '/admin' : '/account'}" class="icon-btn" title="${attr(user.name || user.email)}">${ICONS.user}<span class="icon-label">${esc((user.name || user.email).split(/[\s@]/)[0])}</span></a><form method="post" action="/logout" class="inline"><input type="hidden" name="_csrf" value="${attr(csrf)}"><button class="link muted small">${T('nav.logout')}</button></form>`
     : `<a href="/login" class="icon-btn">${ICONS.user}<span class="icon-label">${T('nav.account')}</span></a>`;
@@ -78,6 +88,7 @@ ${admin ? '' : `<div class="announce">${esc(announce)}</div>`}
     ${admin ? '' : `<form action="/shop" method="get" class="search" role="search">${ICONS.search}<input type="search" name="q" placeholder="${attr(T('nav.search_ph'))}" value="${attr(ctx.q || '')}" aria-label="${attr(T('admin.search'))}"></form>`}
     <div class="header-right">
       ${langSwitch}
+      ${curSwitch}
       ${account}
       ${admin ? '' : `<a href="/cart" class="icon-btn cart-link" aria-label="${attr(T('nav.cart'))}">${ICONS.cart}<span class="icon-label">${T('nav.cart')}</span><span class="cart-count">${cartCount}</span></a>`}
     </div>
@@ -123,7 +134,7 @@ export function productCard(p, ctx) {
       <div class="card-meta">${p.category_name ? `<a href="/shop?cat=${attr(p.category_slug)}">${esc(pCat(p, lang))}</a>` : ''}${conditionPill(p.condition, lang)}</div>
       <a class="card-title" href="/p/${attr(p.slug)}">${esc(name)}</a>
       <div class="card-foot">
-        <div class="price">${money(p.price_cents, cur, lang)}${sale ? ` <s class="compare">${money(p.compare_price_cents, cur, lang)}</s>` : ''}</div>
+        <div class="price">${fmtMoney(ctx, p.price_cents)}${sale ? ` <s class="compare">${fmtMoney(ctx, p.compare_price_cents)}</s>` : ''}</div>
         ${!soldOut && csrf ? `<form method="post" action="/cart/add" class="inline"><input type="hidden" name="_csrf" value="${attr(csrf)}"><input type="hidden" name="product_id" value="${p.id}"><input type="hidden" name="qty" value="1"><button class="quick-add" type="submit" aria-label="${attr(T('product.add'))}: ${attr(name)}">${ICONS.cart}<span>${T('product.quick_add')}</span></button></form>` : ''}
       </div>
     </div></div>`;
@@ -146,7 +157,7 @@ export function trustStrip(ctx) {
   const { settings, lang } = ctx;
   const T = (k, v) => translate(lang, k, v);
   const freeOver = Number(settings.free_shipping_over_cents);
-  const ship = settings.free_shipping_over_cents !== '' && Number.isFinite(freeOver) && freeOver > 0 ? T('trust.free_over', { amount: money(freeOver, settings.currency, lang) }) : T('trust.flat');
+  const ship = settings.free_shipping_over_cents !== '' && Number.isFinite(freeOver) && freeOver > 0 ? T('trust.free_over', { amount: fmtMoney(ctx, freeOver) }) : T('trust.flat');
   return `<section class="trust">
     <div>${ICONS.truck}<div><strong>${T('trust.fast')}</strong><span>${esc(ship)}</span></div></div>
     <div>${ICONS.shield}<div><strong>${T('trust.secure')}</strong><span>${T('trust.secure_sub')}</span></div></div>
@@ -155,18 +166,19 @@ export function trustStrip(ctx) {
   </section>`;
 }
 
-export function orderSummaryTable(order, lang = 'en') {
-  const c = order.currency;
+export function orderSummaryTable(order, ctx) {
+  const c = order.currency, lang = ctx.lang;
   const T = (k, v) => translate(lang, k, v);
+  const m = (cents) => fmtMoney(ctx, cents, c);
   return `<table class="order-items">
     <thead><tr><th>${T('order.item')}</th><th>${T('order.qty')}</th><th class="num">${T('cart.price')}</th><th class="num">${T('cart.total')}</th></tr></thead>
-    <tbody>${order.items.map((it) => `<tr><td><div class="item-cell"><img src="${attr(imgUrl(it.image))}" alt=""><span>${esc(it.name)}</span></div></td><td>${it.qty}</td><td class="num">${money(it.unit_cents, c, lang)}</td><td class="num">${money(it.unit_cents * it.qty, c, lang)}</td></tr>`).join('')}</tbody>
+    <tbody>${order.items.map((it) => `<tr><td><div class="item-cell"><img src="${attr(imgUrl(it.image))}" alt=""><span>${esc(it.name)}</span></div></td><td>${it.qty}</td><td class="num">${m(it.unit_cents)}</td><td class="num">${m(it.unit_cents * it.qty)}</td></tr>`).join('')}</tbody>
     <tfoot>
-      <tr><td colspan="3" class="num">${T('cart.subtotal')}</td><td class="num">${money(order.subtotal_cents, c, lang)}</td></tr>
-      <tr><td colspan="3" class="num">${T('cart.shipping')}</td><td class="num">${order.shipping_cents ? money(order.shipping_cents, c, lang) : T('cart.free')}</td></tr>
-      ${order.tax_cents ? `<tr><td colspan="3" class="num">${T('cart.tax')}</td><td class="num">${money(order.tax_cents, c, lang)}</td></tr>` : ''}
-      <tr class="total"><td colspan="3" class="num">${T('cart.total')}</td><td class="num">${money(order.total_cents, c, lang)}</td></tr>
-    </tfoot></table>`;
+      <tr><td colspan="3" class="num">${T('cart.subtotal')}</td><td class="num">${m(order.subtotal_cents)}</td></tr>
+      <tr><td colspan="3" class="num">${T('cart.shipping')}</td><td class="num">${order.shipping_cents ? m(order.shipping_cents) : T('cart.free')}</td></tr>
+      ${order.tax_cents ? `<tr><td colspan="3" class="num">${T('cart.tax')}</td><td class="num">${m(order.tax_cents)}</td></tr>` : ''}
+      <tr class="total"><td colspan="3" class="num">${T('cart.total')}</td><td class="num">${m(order.total_cents)}</td></tr>
+    </tfoot></table>${converting(ctx) && c === ctx.settings.currency ? `<p class="muted small fx-note">${T('money.approx', { alt: ctx.display.toUpperCase(), base: c.toUpperCase() })}</p>` : ''}`;
 }
 
 export function addressBlock(a = {}) {

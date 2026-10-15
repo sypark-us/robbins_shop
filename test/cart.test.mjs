@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeTotals, formatMoney, parsePrice, cartProblems, clampQty } from '../src/cart.mjs';
+import { computeTotals, formatMoney, parsePrice, cartProblems, clampQty, convertMinor, isZeroDecimal } from '../src/cart.mjs';
+
+test('convertMinor converts between decimal and zero-decimal currencies', () => {
+  assert.equal(convertMinor(48900, 'usd', 'krw', 1350), 660150);
+  assert.equal(convertMinor(1500, 'usd', 'krw', 1352.4), 20286);
+  assert.equal(convertMinor(660150, 'krw', 'usd', 1 / 1350), 48900);
+  assert.equal(convertMinor(1000, 'usd', 'eur', 0.92), 920);
+  assert.ok(isZeroDecimal('KRW') && !isZeroDecimal('usd'));
+  assert.equal(formatMoney(convertMinor(48900, 'usd', 'krw', 1350), 'krw', 'ko-KR'), '₩660,150');
+});
 
 test('computeTotals applies flat shipping, free threshold and tax', () => {
   const s = { tax_rate: '8.25', shipping_flat_cents: '799', free_shipping_over_cents: '10000' };

@@ -15,13 +15,14 @@ const check = (cond, msg) => { if (cond) { passes++; console.log(`PASS ${msg}`);
 const dataDir = mkdtempSync(join(tmpdir(), 'rs-smoke-'));
 const stripeCalls = [];
 const fakeStripe = async (url, init) => {
-  stripeCalls.push({ url, body: new URLSearchParams(init.body || '') });
+  stripeCalls.push({ url, body: new URLSearchParams(init?.body || '') });
   if (url.endsWith('/checkout/sessions')) return { ok: true, json: async () => ({ id: 'cs_test_123', url: 'https://checkout.stripe.com/c/pay/cs_test_123' }) };
   if (url.includes('/checkout/sessions/cs_test_123')) return { ok: true, json: async () => ({ id: 'cs_test_123', payment_status: 'paid', payment_intent: 'pi_123', metadata: { order_id: String(stripeOrderId) } }) };
   if (url.endsWith('/refunds')) return { ok: true, json: async () => ({ id: 're_1' }) };
+  if (url.startsWith('https://api.frankfurter.app/')) { fxCalls++; return { ok: true, json: async () => ({ base: 'USD', rates: { KRW: 1400 } }) }; }
   return { ok: false, status: 404, json: async () => ({ error: { message: 'not mocked' } }) };
 };
-let stripeOrderId = 0;
+let stripeOrderId = 0, fxCalls = 0;
 const app = createApp({ dataDir, env: { ADMIN_EMAIL: '', ADMIN_PASSWORD: '', STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '', BASE_URL: '' }, fetchImpl: fakeStripe, log: () => {} });
 const server = createServer(app.handler);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -269,6 +270,40 @@ try {
   r = await admin.req('/admin/products/new?lang=ko');
   check(r.text.includes('상품명 (한국어)') && r.text.includes('name="name_ko"'), 'admin product form has Korean fields');
   await admin.req('/admin?lang=en');
+
+  // --- display currency (KRW) ---
+  check(fxCalls === 1, 'exchange rate fetched automatically on first run (auto-update is on by default)');
+  ({ token } = await admin.csrf('/admin/settings'));
+  await admin.req('/admin/settings', { method: 'POST', body: { _csrf: token, shop_name: 'Smoke Shop', tagline: '', contact_email: '', currency: 'usd', tax_rate: '0', shipping_flat: '0', free_shipping_over: '100', base_url: 'https://shop.example.com', stripe_secret_key: '', stripe_webhook_secret: '', alt_currency: 'krw', fx_rate: '1350' } });
+  r = await admin.req('/admin/settings');
+  check(r.text.includes('value="1350"') && r.text.includes('Rate last updated'), 'manual exchange rate saved');
+  const krw = client();
+  r = await krw.req(gpu.url);
+  check(r.text.includes('$489.00') && r.text.includes('class="lang-switch cur-switch"') && r.text.includes('?cur=krw'), 'English visitor sees USD and a USD|KRW switch');
+  r = await krw.req(`${gpu.url}?cur=krw`);
+  check(r.text.includes('₩660,150') && r.text.includes('₩741,150') && !r.text.includes('$489.00'), 'KRW display converts price and compare price');
+  r = await krw.req('/');
+  check(r.text.includes('₩660,150') && r.text.includes('₩135,000'), 'currency choice remembered; free-shipping threshold converted');
+  await krw.req('/cart/add', { method: 'POST', body: { _csrf: /name="_csrf" value="([^"]+)"/.exec(r.text)[1], product_id: gpu.id, qty: '1' } });
+  r = await krw.req('/checkout');
+  check(r.text.includes('₩660,150') && r.text.includes('Prices shown in KRW are approximate') && r.text.includes('charged in USD'), 'checkout shows KRW with approximate note');
+  const koKrw = client();
+  r = await koKrw.req('/?lang=ko');
+  check(r.text.includes('₩660,150'), 'Korean-language visitors default to KRW');
+  r = await koKrw.req('/?cur=usd');
+  check(r.text.includes('US$489.00'), 'Korean visitor can switch back to USD');
+  r = await admin.req('/admin/products');
+  check(r.text.includes('$489.00') && !r.text.includes('₩'), 'admin stays in base currency');
+  // auto-refresh fetches from frankfurter when enabled
+  ({ token } = await admin.csrf('/admin/settings'));
+  await admin.req('/admin/settings', { method: 'POST', body: { _csrf: token, shop_name: 'Smoke Shop', tagline: '', contact_email: '', currency: 'usd', tax_rate: '0', shipping_flat: '0', free_shipping_over: '100', base_url: 'https://shop.example.com', stripe_secret_key: '', stripe_webhook_secret: '', alt_currency: 'krw', fx_rate: '1350', fx_auto: '1' } });
+  await new Promise((res) => setTimeout(res, 50));
+  check(fxCalls === 2 && app.db.prepare("SELECT value FROM settings WHERE key='fx_rate'").get().value === '1400', 'auto-update fetched the ECB rate');
+  r = await krw.req(gpu.url);
+  check(r.text.includes('₩684,600'), 'new rate applied to displayed prices');
+  await admin.req('/admin/settings', { method: 'POST', body: { _csrf: token, shop_name: 'Smoke Shop', tagline: '', contact_email: '', currency: 'usd', tax_rate: '0', shipping_flat: '0', free_shipping_over: '', base_url: 'https://shop.example.com', stripe_secret_key: '', stripe_webhook_secret: '', alt_currency: '', fx_rate: '' } });
+  r = await krw.req(gpu.url);
+  check(r.text.includes('$489.00') && !r.text.includes('cur-switch'), 'disabling the second currency removes the switch');
 
   // --- static & misc ---
   check((await fetch(`${base}/public/style.css`)).headers.get('content-type').startsWith('text/css'), 'static css served');

@@ -58,7 +58,8 @@ if (first) {
 }
 await shoot('home-ko', '/?lang=ko');
 if (first) await shoot('product-ko', `/p/${first.slug}`);
-await navigate('/?lang=en');
+await shoot('cart-krw', '/cart?lang=en&cur=krw');
+await navigate('/?lang=en&cur=usd');
 if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
   await navigate('/login');
   await evaluate(`const f = document.querySelector('form[action^="/login"]'); f.email.value = ${JSON.stringify(process.env.ADMIN_EMAIL)}; f.password.value = ${JSON.stringify(process.env.ADMIN_PASSWORD)}; f.submit(); 'ok'`);

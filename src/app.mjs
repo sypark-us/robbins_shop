@@ -8,7 +8,7 @@ import { hashPassword, verifyPassword, randomId, sign, unsign, RateLimiter, vali
 import { computeTotals, clampQty, parsePrice } from './cart.mjs';
 import { StripeClient, constructWebhookEvent } from './stripe.mjs';
 import { t as translate, normalizeLang, LANGS, DEFAULT_LANG } from './i18n.mjs';
-import { layout, esc, attr, nl2br, money, condLabel, statusLabel, imgUrl, productCard, pagination, orderStatusBadge, orderSummaryTable, addressBlock, fmtDate, trustStrip, conditionPill, ICONS, pName, pDesc, cName, pCat, tagline } from './render.mjs';
+import { layout, esc, attr, nl2br, money, condLabel, statusLabel, imgUrl, productCard, pagination, orderStatusBadge, orderSummaryTable, addressBlock, fmtDate, trustStrip, conditionPill, ICONS, pName, pDesc, cName, pCat, tagline, fmtMoney, converting } from './render.mjs';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const SESSION_COOKIE = 'rs_session';
@@ -56,8 +56,13 @@ export function createApp(opts = {}) {
     const wantLang = url.searchParams.get('lang');
     if (wantLang && LANGS[wantLang] && session.data.lang !== wantLang) { session.data.lang = wantLang; fresh = true; }
     const lang = normalizeLang(session.data.lang || DEFAULT_LANG);
+    const s = settings();
+    const alt = (s.alt_currency || '').toLowerCase();
+    const wantCur = (url.searchParams.get('cur') || '').toLowerCase();
+    if (wantCur && [s.currency, alt].includes(wantCur) && session.data.currency !== wantCur) { session.data.currency = wantCur; fresh = true; }
+    const display = session.data.currency && [s.currency, alt].includes(session.data.currency) ? session.data.currency : (lang === 'ko' && alt === 'krw' ? alt : s.currency);
     const ctx = {
-      req, res, url, query: Object.fromEntries(url.searchParams), session, settings: settings(), lang,
+      req, res, url, query: Object.fromEntries(url.searchParams), session, settings: s, lang, display,
       t: (key, vars) => translate(lang, key, vars),
       user: session.userId ? db.findUserById(conn, session.userId) : null, flash, csrf: session.data.csrf,
       cartCount: 0, categories: db.listCategories(conn), q: url.searchParams.get('q') || '', dirty: fresh,
@@ -83,9 +88,26 @@ export function createApp(opts = {}) {
     if (!db.adminExists(conn)) throw new Redirect('/admin/setup');
     if (!ctx.user) throw new Redirect(`/login?next=${encodeURIComponent(ctx.url.pathname)}`);
     if (ctx.user.role !== 'admin') throw new HttpError(403, ctx.t('err.admin_only'));
+    ctx.display = ctx.settings.currency; // admin always works in the base currency
   };
   const touch = (ctx) => { ctx.touch = true; };
-  const M = (ctx, cents) => money(cents, ctx.settings.currency, ctx.lang);
+  const M = (ctx, cents, currency) => fmtMoney(ctx, cents, currency);
+  const fxNote = (ctx) => (converting(ctx) ? `<p class="muted small fx-note">${ctx.t('money.approx', { alt: ctx.display.toUpperCase(), base: ctx.settings.currency.toUpperCase() })}</p>` : '');
+
+  // ---------- exchange rate auto-refresh (ECB rates via frankfurter.app, no API key) ----------
+  let fxInFlight = false;
+  function maybeRefreshRate(s) {
+    const alt = (s.alt_currency || '').toLowerCase();
+    if (s.fx_auto !== '1' || !alt || alt === s.currency || fxInFlight) return;
+    const age = s.fx_updated_at ? Date.now() - Date.parse(s.fx_updated_at) : Infinity;
+    if (age < 12 * 60 * 60 * 1000) return;
+    fxInFlight = true;
+    Promise.resolve().then(() => fetchImpl(`https://api.frankfurter.app/latest?from=${s.currency.toUpperCase()}&to=${alt.toUpperCase()}`))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((data) => { const rate = data?.rates?.[alt.toUpperCase()]; if (rate > 0) { db.setSetting(conn, 'fx_rate', String(rate)); db.setSetting(conn, 'fx_updated_at', new Date().toISOString()); log(`Exchange rate updated: 1 ${s.currency.toUpperCase()} = ${rate} ${alt.toUpperCase()}`); } })
+      .catch((e) => { db.setSetting(conn, 'fx_updated_at', new Date().toISOString()); log('Exchange rate refresh failed:', e.message); })
+      .finally(() => { fxInFlight = false; });
+  }
   const freeOverOf = (s) => { const n = Number(s.free_shipping_over_cents); return s.free_shipping_over_cents !== '' && Number.isFinite(n) && n > 0 ? n : null; };
   /** Stock/availability problems for cart lines, in the visitor's language. */
   const cartProblems = (ctx, lines) => {
@@ -134,7 +156,7 @@ export function createApp(opts = {}) {
     const cond = db.CONDITIONS[q.cond] ? q.cond : '';
     const result = db.listProducts(conn, { q: q.q?.trim(), category: q.cat, condition: cond, sort: q.sort, page: Number(q.page) || 1, perPage: 24 });
     const cat = q.cat ? db.findCategoryBySlug(conn, q.cat) : null;
-    const keep = Object.fromEntries(Object.entries(q).filter(([k]) => k !== 'lang'));
+    const keep = Object.fromEntries(Object.entries(q).filter(([k]) => k !== 'lang' && k !== 'cur'));
     const href = (p) => `/shop?${new URLSearchParams({ ...keep, page: String(p) })}`;
     const hidden = (except) => Object.entries(keep).filter(([k, v]) => k !== except && k !== 'page' && v).map(([k, v]) => `<input type="hidden" name="${attr(k)}" value="${attr(v)}">`).join('');
     const body = `
@@ -246,6 +268,7 @@ export function createApp(opts = {}) {
         ${totals.tax ? `<div class="row"><span>${t('cart.tax')}</span><span>${M(ctx, totals.tax)}</span></div>` : ''}
         <div class="row total"><span>${t('cart.total')}</span><span>${M(ctx, totals.total)}</span></div>
         ${freeOver && freeOver > totals.subtotal && totals.shipping ? `<p class="muted small">${t('cart.free_note', { amount: M(ctx, freeOver) })}</p>` : ''}
+        ${fxNote(ctx)}
         ${problems.length ? `<p class="muted small">${t('cart.fix')}</p>` : `<a href="/checkout" class="btn primary block lg">${t('cart.checkout')}</a>`}
         <a href="/shop" class="btn block">${t('cart.continue')}</a>
       </aside></div>` : `<div class="empty"><h1>${t('cart.empty')}</h1><p class="muted">${t('cart.empty_p')}</p><a href="/shop" class="btn primary">${t('cart.start')}</a></div>`;
@@ -290,6 +313,7 @@ export function createApp(opts = {}) {
         <div class="row"><span>${t('cart.shipping')}</span><span>${totals.shipping ? M(ctx, totals.shipping) : t('cart.free')}</span></div>
         ${totals.tax ? `<div class="row"><span>${t('cart.tax')}</span><span>${M(ctx, totals.tax)}</span></div>` : ''}
         <div class="row total"><span>${t('cart.total')}</span><span>${M(ctx, totals.total)}</span></div>
+        ${fxNote(ctx)}
       </aside></div>`;
   };
 
@@ -425,7 +449,7 @@ export function createApp(opts = {}) {
       ${ctx.query.thanks && order.status !== 'pending' ? `<div class="thanks"><h1>${t('order.thanks')}</h1><p>${t('order.thanks_p', { number: esc(order.number), email: esc(order.email) })}</p></div>` : `<h1>${t('order.title', { number: esc(order.number) })}</h1>`}
       <p>${t('order.status')}: ${orderStatusBadge(order.status, lang)} · ${t('order.placed')} ${esc(fmtDate(order.created_at, lang))}${order.tracking ? ` · ${t('order.tracking')}: <strong>${esc(order.tracking)}</strong>` : ''}</p>
       ${order.status === 'pending' ? `<p class="notice">${t('order.awaiting')}${order.payment_provider === 'test' ? ` <a href="/pay/test/${attr(order.number)}">${t('order.complete_test')}</a>` : ''}</p>` : ''}
-      <div class="cart-layout">${orderSummaryTable(order, lang)}<aside class="card"><h2>${t('order.ships_to')}</h2>${addressBlock(order.ship_address)}</aside></div>`;
+      <div class="cart-layout">${orderSummaryTable(order, ctx)}<aside class="card"><h2>${t('order.ships_to')}</h2>${addressBlock(order.ship_address)}</aside></div>`;
     return page(ctx, t('order.title', { number: order.number }), body);
   });
   router.get('/orders/lookup', (ctx) => page(ctx, ctx.t('order.lookup'), `<div class="card narrow"><h1>${ctx.t('order.lookup')}</h1>
@@ -494,7 +518,7 @@ export function createApp(opts = {}) {
     const orders = db.listOrders(conn, { user_id: ctx.user.id }).items;
     const body = `<h1>${t('account.title')}</h1><p>${esc(ctx.user.name || '')} &lt;${esc(ctx.user.email)}&gt;</p>
       <h2>${t('account.orders')}</h2>${orders.length ? `<table class="table"><thead><tr><th>${t('account.order')}</th><th>${t('account.date')}</th><th>${t('account.status')}</th><th class="num">${t('account.total')}</th></tr></thead><tbody>
-      ${orders.map((o) => `<tr><td><a href="/order/${attr(o.number)}">${esc(o.number)}</a></td><td>${esc(fmtDate(o.created_at, lang))}</td><td>${orderStatusBadge(o.status, lang)}</td><td class="num">${money(o.total_cents, o.currency, lang)}</td></tr>`).join('')}</tbody></table>` : `<p class="muted">${t('account.none')}</p>`}`;
+      ${orders.map((o) => `<tr><td><a href="/order/${attr(o.number)}">${esc(o.number)}</a></td><td>${esc(fmtDate(o.created_at, lang))}</td><td>${orderStatusBadge(o.status, lang)}</td><td class="num">${M(ctx, o.total_cents, o.currency)}</td></tr>`).join('')}</tbody></table>` : `<p class="muted">${t('account.none')}</p>`}`;
     return page(ctx, t('account.title'), body);
   });
 
@@ -540,7 +564,7 @@ export function createApp(opts = {}) {
       </div>
       <p><a class="btn primary" href="/admin/products/new">${t('admin.add_product')}</a> <a class="btn" href="/admin/orders?status=paid">${t('admin.orders_to_ship')}</a></p>
       <div class="cols2">
-      <section><h2>${t('admin.recent_orders')}</h2>${recent.length ? `<table class="table"><tbody>${recent.map((o) => `<tr><td><a href="/admin/orders/${o.id}">${esc(o.number)}</a></td><td>${esc(o.name)}</td><td>${orderStatusBadge(o.status, lang)}</td><td class="num">${money(o.total_cents, o.currency, lang)}</td></tr>`).join('')}</tbody></table>` : `<p class="muted">${t('admin.no_orders')}</p>`}</section>
+      <section><h2>${t('admin.recent_orders')}</h2>${recent.length ? `<table class="table"><tbody>${recent.map((o) => `<tr><td><a href="/admin/orders/${o.id}">${esc(o.number)}</a></td><td>${esc(o.name)}</td><td>${orderStatusBadge(o.status, lang)}</td><td class="num">${M(ctx, o.total_cents, o.currency)}</td></tr>`).join('')}</tbody></table>` : `<p class="muted">${t('admin.no_orders')}</p>`}</section>
       <section><h2>${t('admin.low_stock')}</h2>${st.lowStock.length ? `<table class="table"><tbody>${st.lowStock.map((p) => `<tr><td><a href="/admin/products/${p.id}/edit">${esc(p.name)}</a></td><td class="num">${p.stock}</td></tr>`).join('')}</tbody></table>` : `<p class="muted">${t('admin.all_stocked')}</p>`}</section>
       </div>`;
     return adminPage(ctx, t('admin.dashboard'), body);
@@ -552,7 +576,7 @@ export function createApp(opts = {}) {
     const { t, lang } = ctx;
     const q = ctx.query;
     const r = db.listProducts(conn, { all: true, q: q.q?.trim(), status: PSTATUSES.includes(q.status) ? q.status : '', page: Number(q.page) || 1, perPage: 50 });
-    const keep = Object.fromEntries(Object.entries(q).filter(([k]) => k !== 'lang'));
+    const keep = Object.fromEntries(Object.entries(q).filter(([k]) => k !== 'lang' && k !== 'cur'));
     const body = `<div class="shop-head"><h1>${t('admin.products')} <span class="muted">(${r.total})</span></h1><a class="btn primary" href="/admin/products/new">${t('admin.add_product')}</a></div>
       <form class="filters" method="get"><input type="search" name="q" placeholder="${attr(t('admin.search'))}" value="${attr(q.q || '')}"><select name="status"><option value="">${t('admin.all_statuses')}</option>${PSTATUSES.map((s) => `<option value="${s}"${q.status === s ? ' selected' : ''}>${t(`pstatus.${s}`)}</option>`).join('')}</select><button class="btn">${t('admin.filter')}</button></form>
       <table class="table"><thead><tr><th></th><th>${t('admin.name')}</th><th>${t('admin.category')}</th><th>${t('admin.condition')}</th><th class="num">${t('admin.price')}</th><th class="num">${t('admin.stock')}</th><th>${t('admin.status')}</th><th></th></tr></thead><tbody>
@@ -727,11 +751,11 @@ export function createApp(opts = {}) {
     const { t, lang } = ctx;
     const q = ctx.query;
     const r = db.listOrders(conn, { status: db.ORDER_STATUSES.includes(q.status) ? q.status : '', q: q.q?.trim(), page: Number(q.page) || 1 });
-    const keep = Object.fromEntries(Object.entries(q).filter(([k]) => k !== 'lang'));
+    const keep = Object.fromEntries(Object.entries(q).filter(([k]) => k !== 'lang' && k !== 'cur'));
     const body = `<h1>${t('admin.orders')} <span class="muted">(${r.total})</span></h1>
       <form class="filters" method="get"><input type="search" name="q" placeholder="${attr(t('admin.search_orders_ph'))}" value="${attr(q.q || '')}"><select name="status"><option value="">${t('admin.all_statuses')}</option>${db.ORDER_STATUSES.map((s) => `<option value="${s}"${q.status === s ? ' selected' : ''}>${esc(statusLabel(s, lang))}</option>`).join('')}</select><button class="btn">${t('admin.filter')}</button></form>
       <table class="table"><thead><tr><th>${t('admin.order')}</th><th>${t('admin.date')}</th><th>${t('admin.customer')}</th><th>${t('admin.items')}</th><th>${t('admin.status')}</th><th>${t('admin.payment')}</th><th class="num">${t('admin.total')}</th></tr></thead><tbody>
-      ${r.items.map((o) => `<tr><td><a href="/admin/orders/${o.id}">${esc(o.number)}</a></td><td>${esc(fmtDate(o.created_at, lang))}</td><td>${esc(o.name)}<div class="muted small">${esc(o.email)}</div></td><td>${o.items.reduce((s, i) => s + i.qty, 0)}</td><td>${orderStatusBadge(o.status, lang)}</td><td class="muted small">${esc(o.payment_provider)}</td><td class="num">${money(o.total_cents, o.currency, lang)}</td></tr>`).join('') || `<tr><td colspan="7" class="muted">${t('admin.no_orders_list')}</td></tr>`}
+      ${r.items.map((o) => `<tr><td><a href="/admin/orders/${o.id}">${esc(o.number)}</a></td><td>${esc(fmtDate(o.created_at, lang))}</td><td>${esc(o.name)}<div class="muted small">${esc(o.email)}</div></td><td>${o.items.reduce((s, i) => s + i.qty, 0)}</td><td>${orderStatusBadge(o.status, lang)}</td><td class="muted small">${esc(o.payment_provider)}</td><td class="num">${M(ctx, o.total_cents, o.currency)}</td></tr>`).join('') || `<tr><td colspan="7" class="muted">${t('admin.no_orders_list')}</td></tr>`}
       </tbody></table>${pagination(r.page, r.pages, (p) => `/admin/orders?${new URLSearchParams({ ...keep, page: String(p) })}`)}`;
     return adminPage(ctx, t('admin.orders'), body);
   });
@@ -742,7 +766,7 @@ export function createApp(opts = {}) {
     if (!o) throw new HttpError(404);
     const body = `<h1>${t('order.title', { number: esc(o.number) })} ${orderStatusBadge(o.status, lang)}</h1>
       <div class="cols2">
-        <div>${orderSummaryTable(o, lang)}
+        <div>${orderSummaryTable(o, ctx)}
           <p class="muted small">${t('admin.placed')} ${esc(fmtDate(o.created_at, lang))}${o.paid_at ? ` · ${t('admin.paid')} ${esc(fmtDate(o.paid_at, lang))}` : ''}${o.shipped_at ? ` · ${t('admin.shipped')} ${esc(fmtDate(o.shipped_at, lang))}` : ''}<br>${t('admin.payment')}: ${esc(o.payment_provider)}${o.payment_ref ? ` · ${t('admin.ref')} <code>${esc(o.payment_ref)}</code>` : ''}</p>
           ${o.notes ? `<h3>${t('admin.customer_notes')}</h3><p>${nl2br(o.notes)}</p>` : ''}</div>
         <div class="card">
@@ -801,6 +825,12 @@ export function createApp(opts = {}) {
           <label>${t('admin.flat_shipping')} <input name="shipping_flat" value="${attr((Number(s.shipping_flat_cents) / 100).toFixed(2))}" inputmode="decimal"></label>
           <label>${t('admin.free_over')} <input name="free_shipping_over" value="${attr(s.free_shipping_over_cents === '' ? '' : (Number(s.free_shipping_over_cents) / 100).toFixed(2))}" inputmode="decimal"></label>
           <label>${t('admin.base_url')} ${envLocked('BASE_URL')} <input name="base_url" value="${attr(s.base_url)}" placeholder="https://shop.example.com"></label>
+          <h2>${t('admin.currency_display')}</h2>
+          <p class="muted small">${t('admin.currency_display_help')}</p>
+          <label>${t('admin.alt_currency')} <input name="alt_currency" value="${attr(s.alt_currency)}" maxlength="3" placeholder="krw"></label>
+          <label>${t('admin.fx_rate', { base: esc(s.currency.toUpperCase()), alt: esc((s.alt_currency || 'KRW').toUpperCase()) })} <input name="fx_rate" value="${attr(s.fx_rate)}" inputmode="decimal" placeholder="1350"></label>
+          <label class="check"><input type="checkbox" name="fx_auto" value="1"${s.fx_auto === '1' ? ' checked' : ''}> ${t('admin.fx_auto')}</label>
+          <p class="muted small">${s.fx_updated_at ? t('admin.fx_updated', { when: esc(fmtDate(s.fx_updated_at.replace('T', ' ').replace(/\.\d+Z$/, ''), ctx.lang)) }) : t('admin.fx_never')}</p>
         </div>
         <div class="card"><h2>${t('admin.payments')}</h2>
           <p class="muted small">${t('admin.stripe_help')}</p>
@@ -829,6 +859,16 @@ export function createApp(opts = {}) {
     db.setSetting(conn, 'shipping_flat_cents', String(parsePrice(tx('shipping_flat'), cur) ?? 0));
     db.setSetting(conn, 'free_shipping_over_cents', tx('free_shipping_over') === '' ? '' : String(parsePrice(tx('free_shipping_over'), cur) ?? ''));
     db.setSetting(conn, 'base_url', tx('base_url').replace(/\/+$/, ''));
+    const alt = tx('alt_currency', 3).toLowerCase();
+    db.setSetting(conn, 'alt_currency', /^[a-z]{3}$/.test(alt) ? alt : '');
+    const fxText = String(fields.fx_rate ?? '').trim();
+    const fx = Number(fxText.replace(/[^0-9.]/g, ''));
+    if (!fxText) db.setSetting(conn, 'fx_rate', '');
+    else if (Number.isFinite(fx) && fx > 0 && String(fx) !== db.getSetting(conn, 'fx_rate')) { db.setSetting(conn, 'fx_rate', String(fx)); db.setSetting(conn, 'fx_updated_at', new Date().toISOString()); }
+    const autoBefore = db.getSetting(conn, 'fx_auto');
+    db.setSetting(conn, 'fx_auto', fields.fx_auto === '1' ? '1' : '0');
+    if (fields.fx_auto === '1' && autoBefore !== '1') db.setSetting(conn, 'fx_updated_at', '');
+    maybeRefreshRate(settings());
     db.setSetting(conn, 'stripe_secret_key', tx('stripe_secret_key'));
     db.setSetting(conn, 'stripe_webhook_secret', tx('stripe_webhook_secret'));
     ctx.setFlash('ok', ctx.t('admin.settings_saved'));
@@ -868,6 +908,7 @@ export function createApp(opts = {}) {
     let ctx;
     try {
       ctx = buildContext(req, res);
+      maybeRefreshRate(ctx.settings);
       if (!m) throw new HttpError(404, ctx.t('err.not_found_p'));
       await m.handler(ctx, m.params);
     } catch (e) {
@@ -883,7 +924,7 @@ export function createApp(opts = {}) {
     }
   }
 
-  const sweeper = setInterval(() => { try { db.expirePendingOrders(conn, 120); db.purgeOldSessions(conn, 30); } catch (e) { log('sweep error', e); } }, 10 * 60 * 1000);
+  const sweeper = setInterval(() => { try { db.expirePendingOrders(conn, 120); db.purgeOldSessions(conn, 30); maybeRefreshRate(settings()); } catch (e) { log('sweep error', e); } }, 10 * 60 * 1000);
   sweeper.unref?.();
 
   return {

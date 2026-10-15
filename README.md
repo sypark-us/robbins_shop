@@ -18,6 +18,11 @@ A self-hosted online shop. Upload products (computer parts, used items, clothing
 - Products and categories take an optional Korean name and description; English is shown wherever the Korean text is empty
 - Search matches both languages; prices and dates follow the selected language; Stripe Checkout opens in the same language
 
+**Currency display**
+- Prices are stored and charged in one base currency (Settings → Currency, e.g. `usd`)
+- Optionally show a second currency (default `krw`): visitors get a USD | KRW switch in the header, Korean-language visitors default to KRW, and converted amounts are marked as approximate at checkout
+- The exchange rate is entered in Settings or refreshed automatically once a day from European Central Bank data (frankfurter.app, no API key); admin pages always show the base currency
+
 **Payments**
 - Stripe hosted Checkout: redirect, verify on return, and authoritative confirmation via signed webhooks
 - Handles expired/failed sessions (order cancelled, stock released), refunds from the admin (and `charge.refunded` webhooks)

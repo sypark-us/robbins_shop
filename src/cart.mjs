@@ -2,6 +2,15 @@
 
 const ZERO_DECIMAL = new Set(['jpy', 'krw', 'vnd', 'clp', 'pyg', 'xaf', 'xof', 'bif', 'djf', 'gnf', 'kmf', 'mga', 'rwf', 'ugx', 'xpf']);
 
+export const isZeroDecimal = (currency) => ZERO_DECIMAL.has(String(currency || '').toLowerCase());
+
+/** Convert minor units of `from` into minor units of `to` at `rate` (units of `to` per 1 unit of `from`). */
+export function convertMinor(cents, from, to, rate) {
+  const units = Number(cents) / (isZeroDecimal(from) ? 1 : 100);
+  const target = units * Number(rate);
+  return isZeroDecimal(to) ? Math.round(target) : Math.round(target * 100);
+}
+
 export function formatMoney(cents, currency = 'usd', locale = 'en-US') {
   const cur = String(currency || 'usd').toUpperCase();
   const zero = ZERO_DECIMAL.has(cur.toLowerCase());
