@@ -1,0 +1,19 @@
+{
+  "name": "robbins_shop",
+  "version": "1.0.0",
+  "description": "Self-hosted online shop: upload products (computer parts, used items, clothes), customers browse, add to cart and pay with Stripe Checkout (cards, Apple Pay, Google Pay, Link). Zero npm dependencies.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs",
+    "seed": "node scripts/seed.mjs",
+    "test": "node --test \"test/*.test.mjs\" && node test/run-smoke.mjs",
+    "test:unit": "node --test \"test/*.test.mjs\"",
+    "test:smoke": "node test/run-smoke.mjs",
+    "screenshot": "node test/screenshot.mjs"
+  },
+  "license": "MIT",
+  "repository": "github:sypark-us/robbins_shop"
+}
