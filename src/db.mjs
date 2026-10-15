@@ -54,6 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_cart_session ON cart_items(session_id);
 export const DEFAULT_SETTINGS = {
   shop_name: 'Robbins Shop',
   tagline: 'Computer parts, pre-loved goods and clothing',
+  tagline_ko: '컴퓨터 부품, 중고 물품, 의류',
   currency: 'usd',
   tax_rate: '0', // percent, e.g. "8.25"
   shipping_flat_cents: '799',
@@ -69,10 +70,19 @@ export function openDb(path = ':memory:') {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
   db.exec(SCHEMA);
+  migrate(db);
   const ins = db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
   if (!getSetting(db, 'session_secret')) setSetting(db, 'session_secret', randomBytes(32).toString('hex'));
   return db;
+}
+
+// Adds columns introduced after v1 to existing databases.
+function migrate(db) {
+  const has = (table, col) => db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
+  if (!has('products', 'name_ko')) db.exec("ALTER TABLE products ADD COLUMN name_ko TEXT NOT NULL DEFAULT ''");
+  if (!has('products', 'description_ko')) db.exec("ALTER TABLE products ADD COLUMN description_ko TEXT NOT NULL DEFAULT ''");
+  if (!has('categories', 'name_ko')) db.exec("ALTER TABLE categories ADD COLUMN name_ko TEXT NOT NULL DEFAULT ''");
 }
 
 // ---- settings ----
@@ -137,24 +147,27 @@ export function purgeOldSessions(db, days = 30) {
 
 // ---- categories ----
 export function listCategories(db) { return db.prepare('SELECT * FROM categories ORDER BY position, name').all(); }
-export function createCategory(db, name) {
+export function createCategory(db, name, nameKo = '') {
   const slug = uniqueSlug(db, 'categories', slugify(name));
-  const r = db.prepare('INSERT INTO categories(name, slug) VALUES (?, ?)').run(name.trim(), slug);
+  const r = db.prepare('INSERT INTO categories(name, slug, name_ko) VALUES (?, ?, ?)').run(name.trim(), slug, String(nameKo || '').trim());
   return db.prepare('SELECT * FROM categories WHERE id = ?').get(Number(r.lastInsertRowid));
+}
+export function updateCategory(db, id, name, nameKo = '') {
+  db.prepare('UPDATE categories SET name = ?, name_ko = ? WHERE id = ?').run(String(name).trim(), String(nameKo || '').trim(), id);
 }
 export function deleteCategory(db, id) { db.prepare('DELETE FROM categories WHERE id = ?').run(id); }
 export function findCategoryBySlug(db, slug) { return db.prepare('SELECT * FROM categories WHERE slug = ?').get(slug) || null; }
 
 // ---- products ----
-const PRODUCT_SELECT = `SELECT p.*, c.name AS category_name, c.slug AS category_slug,
+const PRODUCT_SELECT = `SELECT p.*, c.name AS category_name, c.name_ko AS category_name_ko, c.slug AS category_slug,
   (SELECT filename FROM product_images i WHERE i.product_id = p.id ORDER BY position, id LIMIT 1) AS image
   FROM products p LEFT JOIN categories c ON c.id = p.category_id`;
 
 export function createProduct(db, p) {
   const slug = uniqueSlug(db, 'products', slugify(p.slug || p.name));
-  const r = db.prepare(`INSERT INTO products(slug, name, description, price_cents, compare_price_cents, category_id, condition, stock, status, featured, sku)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(slug, p.name, p.description || '', p.price_cents, p.compare_price_cents ?? null,
-    p.category_id ?? null, p.condition || 'new', p.stock ?? 0, p.status || 'active', p.featured ? 1 : 0, p.sku || '');
+  const r = db.prepare(`INSERT INTO products(slug, name, description, price_cents, compare_price_cents, category_id, condition, stock, status, featured, sku, name_ko, description_ko)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(slug, p.name, p.description || '', p.price_cents, p.compare_price_cents ?? null,
+    p.category_id ?? null, p.condition || 'new', p.stock ?? 0, p.status || 'active', p.featured ? 1 : 0, p.sku || '', p.name_ko || '', p.description_ko || '');
   return getProduct(db, Number(r.lastInsertRowid));
 }
 export function updateProduct(db, id, p) {
@@ -162,9 +175,9 @@ export function updateProduct(db, id, p) {
   if (!cur) return null;
   const slug = p.slug !== undefined && slugify(p.slug) !== cur.slug ? uniqueSlug(db, 'products', slugify(p.slug || p.name || cur.name), id) : cur.slug;
   db.prepare(`UPDATE products SET slug = ?, name = ?, description = ?, price_cents = ?, compare_price_cents = ?, category_id = ?, condition = ?,
-    stock = ?, status = ?, featured = ?, sku = ?, updated_at = datetime('now') WHERE id = ?`).run(
+    stock = ?, status = ?, featured = ?, sku = ?, name_ko = ?, description_ko = ?, updated_at = datetime('now') WHERE id = ?`).run(
     slug, p.name ?? cur.name, p.description ?? cur.description, p.price_cents ?? cur.price_cents, p.compare_price_cents ?? null,
-    p.category_id ?? null, p.condition ?? cur.condition, p.stock ?? cur.stock, p.status ?? cur.status, p.featured ? 1 : 0, p.sku ?? cur.sku, id);
+    p.category_id ?? null, p.condition ?? cur.condition, p.stock ?? cur.stock, p.status ?? cur.status, p.featured ? 1 : 0, p.sku ?? cur.sku, p.name_ko ?? cur.name_ko, p.description_ko ?? cur.description_ko, id);
   return getProduct(db, id);
 }
 export function deleteProduct(db, id) {
@@ -203,7 +216,7 @@ export function listProducts(db, opts = {}) {
   const where = [], args = [];
   if (!opts.all) { where.push('p.status = ?'); args.push(opts.status || 'active'); }
   else if (opts.status) { where.push('p.status = ?'); args.push(opts.status); }
-  if (opts.q) { where.push('(p.name LIKE ? OR p.description LIKE ? OR p.sku LIKE ?)'); const like = `%${opts.q}%`; args.push(like, like, like); }
+  if (opts.q) { where.push('(p.name LIKE ? OR p.description LIKE ? OR p.sku LIKE ? OR p.name_ko LIKE ? OR p.description_ko LIKE ?)'); const like = `%${opts.q}%`; args.push(like, like, like, like, like); }
   if (opts.category) { where.push('c.slug = ?'); args.push(opts.category); }
   if (opts.condition) { where.push('p.condition = ?'); args.push(opts.condition); }
   if (opts.featured) where.push('p.featured = 1');
@@ -219,7 +232,7 @@ export function listProducts(db, opts = {}) {
 
 // ---- cart ----
 export function getCart(db, sessionId) {
-  return db.prepare(`SELECT ci.product_id, ci.qty, p.name, p.slug, p.price_cents, p.stock, p.status, p.condition,
+  return db.prepare(`SELECT ci.product_id, ci.qty, p.name, p.name_ko, p.slug, p.price_cents, p.stock, p.status, p.condition,
     (SELECT filename FROM product_images i WHERE i.product_id = p.id ORDER BY position, id LIMIT 1) AS image
     FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.session_id = ? ORDER BY ci.id`).all(sessionId);
 }

@@ -48,6 +48,13 @@ main.wrap { min-height: 60vh; padding-top: 1.5rem; padding-bottom: 4rem; }
 .header-right { margin-left: auto; display: flex; align-items: center; gap: 1rem; }
 .icon-btn { display: inline-flex; align-items: center; gap: .4rem; font-weight: 600; font-size: .9rem; color: var(--text); position: relative; padding: .4rem .2rem; }
 .icon-btn svg { width: 22px; height: 22px; }
+.lang-switch { display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem; font-weight: 600; color: var(--muted); }
+.lang-switch svg { width: 17px; height: 17px; margin-right: .1rem; }
+.lang-switch a { color: var(--muted); padding: .2rem .1rem; }
+.lang-switch a.current { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.lang-switch .sep { opacity: .5; }
+body.lang-ko { font-family: Inter, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; }
+body.lang-ko h1, body.lang-ko h2, body.lang-ko h3 { letter-spacing: -0.02em; word-break: keep-all; }
 .cart-count { background: var(--ink); color: var(--ink-text); border-radius: 99px; padding: 0 .45rem; font-size: .72rem; line-height: 1.4; font-weight: 700; margin-left: .1rem; }
 .main-nav { border-top: 1px solid var(--line); }
 .main-nav .wrap { display: flex; gap: 1.6rem; overflow-x: auto; scrollbar-width: none; }

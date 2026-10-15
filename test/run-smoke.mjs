@@ -58,7 +58,7 @@ try {
 
   // --- settings ---
   ({ token } = await admin.csrf('/admin/settings'));
-  r = await admin.req('/admin/settings', { method: 'POST', body: { _csrf: token, shop_name: 'Smoke Shop', tagline: 'tag', contact_email: '', currency: 'usd', tax_rate: '10', shipping_flat: '5.00', free_shipping_over: '100', base_url: '', stripe_secret_key: '', stripe_webhook_secret: '' } });
+  r = await admin.req('/admin/settings', { method: 'POST', body: { _csrf: token, shop_name: 'Smoke Shop', tagline: 'tag', tagline_ko: '태그', contact_email: '', currency: 'usd', tax_rate: '10', shipping_flat: '5.00', free_shipping_over: '100', base_url: '', stripe_secret_key: '', stripe_webhook_secret: '' } });
   check(r.status === 303, 'settings saved');
 
   // --- category + product with image upload (multipart) ---
@@ -240,6 +240,35 @@ try {
   check(r.status === 303 && r.location === '/cart', 'cancel redirects to cart');
   check(app.db.prepare('SELECT status FROM orders WHERE number = ?').get(cancelNumber).status === 'cancelled', 'cancelled order restocked');
   check((await s2.req('/api/products')).json().items.find((p) => p.id === tee.id).stock === 10, 'stock restored after cancel');
+
+  // --- Korean language ---
+  ({ token } = await admin.csrf('/admin/categories'));
+  await admin.req('/admin/categories', { method: 'POST', body: { _csrf: token, name: 'Clothing', name_ko: '의류' } });
+  r = await admin.req('/admin/categories');
+  check(r.text.includes('value="의류"'), 'category created with Korean name');
+  const catIdKo = /action="\/admin\/categories\/(\d+)"><td>.*?value="Computer parts"/s.exec(r.text)?.[1];
+  await admin.req(`/admin/categories/${catIdKo}`, { method: 'POST', body: { _csrf: token, name: 'Computer parts', name_ko: '컴퓨터 부품' } });
+  ({ token } = await admin.csrf(`/admin/products/${productId}/edit`));
+  r = await admin.req(`/admin/products/${productId}`, { method: 'POST', body: { _csrf: token, name: 'RTX 4070 <Used>', name_ko: 'RTX 4070 그래픽카드', description: 'Line one\nLine two', description_ko: '한국어 설명', price: '489.00', compare_price: '549', stock: '2', sku: 'GPU-1', condition: 'like_new', category_id: catId, status: 'active', featured: '1', slug: gpu.slug.replace(/^\//, '') } });
+  check(r.status === 303, 'product updated with Korean fields');
+  const ko = client();
+  r = await ko.req('/?lang=ko');
+  check(r.status === 200 && r.text.includes('<html lang="ko">') && r.text.includes('전체 상품') && r.text.includes('컴퓨터 부품'), 'home renders in Korean with translated category');
+  r = await ko.req('/shop');
+  check(r.text.includes('RTX 4070 그래픽카드') && r.text.includes('거의 새것') && !r.text.includes('All products'), 'language remembered; Korean product name and condition shown');
+  r = await ko.req('/shop?q=그래픽카드');
+  check(r.text.includes('1개 상품'), 'search matches Korean name');
+  r = await ko.req(gpu.url);
+  check(r.text.includes('한국어 설명') && r.text.includes('장바구니 담기') && r.text.includes('재고 2개 남음'), 'Korean product page');
+  r = await ko.req('/p/missing-item');
+  check(r.status === 404 && r.text.includes('상품을 찾을 수 없습니다'), 'Korean 404 message');
+  r = await ko.req('/shop?lang=en');
+  check(r.text.includes('All products') && r.text.includes('RTX 4070 &lt;Used&gt;'), 'switch back to English');
+  r = await admin.req('/admin?lang=ko');
+  check(r.text.includes('대시보드') && r.text.includes('매출'), 'admin renders in Korean');
+  r = await admin.req('/admin/products/new?lang=ko');
+  check(r.text.includes('상품명 (한국어)') && r.text.includes('name="name_ko"'), 'admin product form has Korean fields');
+  await admin.req('/admin?lang=en');
 
   // --- static & misc ---
   check((await fetch(`${base}/public/style.css`)).headers.get('content-type').startsWith('text/css'), 'static css served');

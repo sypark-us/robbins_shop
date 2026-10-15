@@ -13,6 +13,11 @@ A self-hosted online shop. Upload products (computer parts, used items, clothing
 - Order tracking page by order number + email, status and tracking number
 - JSON API: `/api/products`, `/api/health`
 
+**Languages**
+- English (default) and Korean (한국어) for the storefront and the admin, switchable from the header; the choice is remembered per visitor (`?lang=ko` / `?lang=en`)
+- Products and categories take an optional Korean name and description; English is shown wherever the Korean text is empty
+- Search matches both languages; prices and dates follow the selected language; Stripe Checkout opens in the same language
+
 **Payments**
 - Stripe hosted Checkout: redirect, verify on return, and authoritative confirmation via signed webhooks
 - Handles expired/failed sessions (order cancelled, stock released), refunds from the admin (and `charge.refunded` webhooks)

@@ -32,7 +32,7 @@ export class StripeClient {
     return data;
   }
   /** Create a hosted Checkout Session for an order. Returns { id, url }. */
-  createCheckoutSession({ order, successUrl, cancelUrl, baseUrl }) {
+  createCheckoutSession({ order, successUrl, cancelUrl, baseUrl, locale, shippingLabel = 'Shipping', taxLabel = 'Sales tax' }) {
     const abs = (u) => (u.startsWith('http') ? u : `${baseUrl}${u}`);
     const line_items = order.items.map((it) => ({
       quantity: it.qty,
@@ -42,10 +42,11 @@ export class StripeClient {
         product_data: { name: it.name, ...(it.image && baseUrl && /^https:/.test(baseUrl) ? { images: [`${baseUrl}/uploads/${it.image}`] } : {}) },
       },
     }));
-    if (order.shipping_cents > 0) line_items.push({ quantity: 1, price_data: { currency: order.currency, unit_amount: order.shipping_cents, product_data: { name: 'Shipping' } } });
-    if (order.tax_cents > 0) line_items.push({ quantity: 1, price_data: { currency: order.currency, unit_amount: order.tax_cents, product_data: { name: 'Sales tax' } } });
+    if (order.shipping_cents > 0) line_items.push({ quantity: 1, price_data: { currency: order.currency, unit_amount: order.shipping_cents, product_data: { name: shippingLabel } } });
+    if (order.tax_cents > 0) line_items.push({ quantity: 1, price_data: { currency: order.currency, unit_amount: order.tax_cents, product_data: { name: taxLabel } } });
     return this.request('POST', '/checkout/sessions', {
       mode: 'payment',
+      ...(locale ? { locale } : {}),
       line_items,
       customer_email: order.email,
       client_reference_id: order.number,
