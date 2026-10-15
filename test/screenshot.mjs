@@ -40,6 +40,8 @@ const shoot = async (name, path) => {
 
 await send('Page.enable');
 await send('Runtime.enable');
+await send('Network.enable');
+await send('Network.setCacheDisabled', { cacheDisabled: true });
 await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
 mkdirSync('screenshots', { recursive: true });
 const first = app.db.prepare("SELECT slug FROM products WHERE status='active' AND stock > 0 ORDER BY featured DESC, id LIMIT 1").get();

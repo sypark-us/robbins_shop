@@ -7,7 +7,7 @@ import { Router, HttpError, parseCookies, serializeCookie, parseBody, readBody, 
 import { hashPassword, verifyPassword, randomId, sign, unsign, RateLimiter, validEmail } from './auth.mjs';
 import { computeTotals, cartProblems, clampQty, parsePrice } from './cart.mjs';
 import { StripeClient, constructWebhookEvent } from './stripe.mjs';
-import { layout, esc, attr, nl2br, money, condLabel, imgUrl, productCard, pagination, orderStatusBadge, orderSummaryTable, addressBlock, fmtDate } from './render.mjs';
+import { layout, esc, attr, nl2br, money, condLabel, imgUrl, productCard, pagination, orderStatusBadge, orderSummaryTable, addressBlock, fmtDate, trustStrip, conditionPill, ICONS } from './render.mjs';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
 const SESSION_COOKIE = 'rs_session';
@@ -87,14 +87,28 @@ export function createApp(opts = {}) {
   // ---------- storefront ----------
   router.get('/', (ctx) => {
     const cur = ctx.settings.currency;
-    const featured = db.listProducts(conn, { featured: true, inStock: true, perPage: 8 }).items;
-    const latest = db.listProducts(conn, { perPage: 12 }).items;
+    const featured = db.listProducts(conn, { featured: true, inStock: true, perPage: 4 }).items;
+    const latest = db.listProducts(conn, { perPage: 8 }).items;
+    const heroImg = (featured[0] || latest[0])?.image;
+    const counts = Object.fromEntries(conn.prepare("SELECT category_id, COUNT(*) AS n FROM products WHERE status = 'active' GROUP BY category_id").all().map((r) => [r.category_id, r.n]));
+    const catImg = Object.fromEntries(conn.prepare(`SELECT p.category_id, (SELECT filename FROM product_images i WHERE i.product_id = p.id ORDER BY position, id LIMIT 1) AS img
+      FROM products p WHERE p.status = 'active' AND p.category_id IS NOT NULL ORDER BY p.featured DESC, p.id DESC`).all().filter((r) => r.img).reverse().map((r) => [r.category_id, r.img]));
+    const section = (title, sub, items, more) => `<section class="section"><div class="section-head"><div><h2>${title}</h2>${sub ? `<p class="muted">${sub}</p>` : ''}</div>${more ? `<a class="more" href="${more}">View all →</a>` : ''}</div><div class="grid">${items.map((p) => productCard(p, cur, ctx.csrf)).join('')}</div></section>`;
     const body = `
-      <section class="hero"><h1>${esc(ctx.settings.shop_name)}</h1><p>${esc(ctx.settings.tagline)}</p><a class="btn primary" href="/shop">Browse everything</a></section>
-      ${ctx.categories.length ? `<section class="cats">${ctx.categories.map((c) => `<a class="chip" href="/shop?cat=${attr(c.slug)}">${esc(c.name)}</a>`).join('')}</section>` : ''}
-      ${featured.length ? `<h2>Featured</h2><div class="grid">${featured.map((p) => productCard(p, cur)).join('')}</div>` : ''}
-      <h2>New arrivals</h2>
-      ${latest.length ? `<div class="grid">${latest.map((p) => productCard(p, cur)).join('')}</div>` : '<p class="muted">No products yet. ' + (ctx.user?.role === 'admin' ? '<a href="/admin/products/new">Add your first product</a>.' : 'Check back soon!') + '</p>'}`;
+      <section class="hero">
+        <div class="hero-text">
+          <span class="eyebrow">${esc(ctx.settings.tagline || 'Welcome')}</span>
+          <h1>Good gear.<br>Fair prices.<br>Honest condition.</h1>
+          <p>Computer parts, pre-loved finds and clothing, each one inspected, photographed and described exactly as it is.</p>
+          <div class="hero-cta"><a class="btn primary lg" href="/shop">Shop all products</a><a class="btn lg ghost" href="/shop?cond=used">Browse pre-owned</a></div>
+        </div>
+        <div class="hero-art"><img src="${attr(imgUrl(heroImg))}" alt=""></div>
+      </section>
+      ${trustStrip(ctx.settings)}
+      ${ctx.categories.length ? `<section class="section"><div class="section-head"><h2>Shop by category</h2></div><div class="cat-grid">${ctx.categories.map((c) => `<a class="cat-tile" href="/shop?cat=${attr(c.slug)}"><img src="${attr(imgUrl(catImg[c.id]))}" alt=""><div><strong>${esc(c.name)}</strong><span>${counts[c.id] || 0} item${counts[c.id] === 1 ? '' : 's'}</span></div></a>`).join('')}</div></section>` : ''}
+      ${featured.length ? section('Staff picks', 'Hand-picked favourites from the current stock', featured, '/shop') : ''}
+      ${latest.length ? section('New arrivals', 'Fresh stock, added most recently', latest, '/shop') : '<section class="section"><p class="muted">No products yet. ' + (ctx.user?.role === 'admin' ? '<a href="/admin/products/new">Add your first product</a>.' : 'Check back soon!') + '</p></section>'}
+      <section class="banner"><div><h2>Looking for something specific?</h2><p>Use the search, or track an order you already placed.</p></div><div class="hero-cta"><a class="btn primary" href="/shop">Search the shop</a><a class="btn ghost" href="/orders/lookup">Track an order</a></div></section>`;
     return page(ctx, '', body);
   });
 
@@ -106,6 +120,7 @@ export function createApp(opts = {}) {
     const href = (p) => { const u = new URLSearchParams({ ...q, page: String(p) }); return `/shop?${u}`; };
     const hidden = (except) => Object.entries(q).filter(([k, v]) => k !== except && k !== 'page' && v).map(([k, v]) => `<input type="hidden" name="${attr(k)}" value="${attr(v)}">`).join('');
     const body = `
+      <nav class="crumbs"><a href="/">Home</a> › ${cat ? `<a href="/shop">Shop</a> › ${esc(cat.name)}` : 'Shop'}</nav>
       <div class="shop-head"><h1>${cat ? esc(cat.name) : q.q ? `Results for “${esc(q.q)}”` : 'All products'}</h1><span class="muted">${result.total} item${result.total === 1 ? '' : 's'}</span></div>
       <div class="filters">
         <form method="get" action="/shop">${hidden('cat')}<select name="cat" onchange="this.form.submit()"><option value="">All categories</option>${ctx.categories.map((c) => `<option value="${attr(c.slug)}"${c.slug === q.cat ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></form>
@@ -113,7 +128,7 @@ export function createApp(opts = {}) {
         <form method="get" action="/shop">${hidden('sort')}<select name="sort" onchange="this.form.submit()">${[['', 'Newest'], ['price_asc', 'Price: low to high'], ['price_desc', 'Price: high to low'], ['name', 'Name A–Z']].map(([k, v]) => `<option value="${k}"${(q.sort || '') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></form>
         ${Object.values(q).some(Boolean) ? '<a href="/shop" class="muted">Clear</a>' : ''}
       </div>
-      ${result.items.length ? `<div class="grid">${result.items.map((p) => productCard(p, ctx.settings.currency)).join('')}</div>` : '<p class="muted">Nothing matched. Try another search or category.</p>'}
+      ${result.items.length ? `<div class="grid">${result.items.map((p) => productCard(p, ctx.settings.currency, ctx.csrf)).join('')}</div>` : '<div class="empty"><h2>Nothing matched</h2><p class="muted">Try another search or category.</p><a class="btn" href="/shop">Clear filters</a></div>'}
       ${pagination(result.page, result.pages, href)}`;
     return page(ctx, cat ? cat.name : 'Shop', body);
   });
@@ -123,30 +138,40 @@ export function createApp(opts = {}) {
     if (!p || (p.status !== 'active' && ctx.user?.role !== 'admin')) throw new HttpError(404, 'Product not found');
     const cur = ctx.settings.currency;
     const imgs = p.images.length ? p.images : [{ filename: null }];
+    const sale = p.compare_price_cents > p.price_cents;
+    const related = p.category_id ? db.listProducts(conn, { category: p.category_slug, inStock: true, perPage: 5 }).items.filter((r) => r.id !== p.id).slice(0, 4) : [];
+    const freeOver = Number(ctx.settings.free_shipping_over_cents);
     const body = `
-      <nav class="crumbs"><a href="/shop">Shop</a>${p.category_name ? ` › <a href="/shop?cat=${attr(p.category_slug)}">${esc(p.category_name)}</a>` : ''} › ${esc(p.name)}</nav>
+      <nav class="crumbs"><a href="/">Home</a> › <a href="/shop">Shop</a>${p.category_name ? ` › <a href="/shop?cat=${attr(p.category_slug)}">${esc(p.category_name)}</a>` : ''} › ${esc(p.name)}</nav>
       <div class="product">
         <div class="gallery">
-          <img id="main-img" src="${attr(imgUrl(imgs[0].filename))}" alt="${attr(p.name)}">
+          <div class="main-img-wrap">${sale ? `<span class="ribbon sale">-${Math.round((1 - p.price_cents / p.compare_price_cents) * 100)}%</span>` : ''}<img id="main-img" src="${attr(imgUrl(imgs[0].filename))}" alt="${attr(p.name)}"></div>
           ${imgs.length > 1 ? `<div class="thumbs">${imgs.map((i, n) => `<img src="${attr(imgUrl(i.filename))}" alt="" data-full="${attr(imgUrl(i.filename))}" class="${n === 0 ? 'active' : ''}">`).join('')}</div>` : ''}
+          <section class="description"><h2>About this item</h2><p>${nl2br(p.description) || '<span class="muted">No description provided.</span>'}</p></section>
         </div>
-        <div class="product-info">
+        <aside class="buy-box">
           ${p.status !== 'active' ? '<p class="notice">This product is not published (admin preview).</p>' : ''}
+          <div class="card-meta">${p.category_name ? `<a href="/shop?cat=${attr(p.category_slug)}">${esc(p.category_name)}</a>` : ''}${conditionPill(p.condition)}</div>
           <h1>${esc(p.name)}</h1>
-          <div class="price big">${money(p.price_cents, cur)}${p.compare_price_cents > p.price_cents ? ` <s class="compare">${money(p.compare_price_cents, cur)}</s>` : ''}</div>
-          <dl class="specs">
-            <dt>Condition</dt><dd>${esc(condLabel(p.condition))}</dd>
-            ${p.category_name ? `<dt>Category</dt><dd><a href="/shop?cat=${attr(p.category_slug)}">${esc(p.category_name)}</a></dd>` : ''}
-            ${p.sku ? `<dt>SKU</dt><dd>${esc(p.sku)}</dd>` : ''}
-            <dt>Availability</dt><dd>${p.stock > 0 ? (p.stock <= 3 ? `<span class="low">Only ${p.stock} left</span>` : 'In stock') : '<span class="out">Sold out</span>'}</dd>
-          </dl>
+          <div class="price big">${money(p.price_cents, cur)}${sale ? ` <s class="compare">${money(p.compare_price_cents, cur)}</s><span class="save">Save ${money(p.compare_price_cents - p.price_cents, cur)}</span>` : ''}</div>
+          <div class="avail">${p.stock > 0 ? (p.stock <= 3 ? `<span class="dot low"></span><span class="low">Only ${p.stock} left in stock</span>` : '<span class="dot ok"></span>In stock, ready to ship') : '<span class="dot out"></span><span class="out">Sold out</span>'}</div>
           ${p.stock > 0 && p.status === 'active' ? `<form method="post" action="/cart/add" class="add-form">
             <input type="hidden" name="_csrf" value="${attr(ctx.csrf)}"><input type="hidden" name="product_id" value="${p.id}">
             <label>Qty <input type="number" name="qty" value="1" min="1" max="${p.stock}"></label>
-            <button class="btn primary" type="submit">Add to cart</button></form>` : ''}
-          <div class="description">${nl2br(p.description)}</div>
-        </div>
-      </div>`;
+            <button class="btn primary lg" type="submit">${ICONS.cart} Add to cart</button></form>` : `<a class="btn lg block" href="/shop${p.category_slug ? `?cat=${attr(p.category_slug)}` : ''}">See similar items</a>`}
+          <ul class="buy-perks">
+            <li>${ICONS.shield}Secure checkout with cards, Apple Pay &amp; Google Pay</li>
+            <li>${ICONS.truck}${Number.isFinite(freeOver) && freeOver > 0 && ctx.settings.free_shipping_over_cents !== '' ? `Free shipping on orders over ${money(freeOver, cur)}` : 'Flat-rate shipping, tracked'}</li>
+            <li>${ICONS.check}Condition: ${esc(condLabel(p.condition))}, inspected before listing</li>
+          </ul>
+          <dl class="specs">
+            <dt>Condition</dt><dd>${esc(condLabel(p.condition))}</dd>
+            ${p.sku ? `<dt>SKU</dt><dd>${esc(p.sku)}</dd>` : ''}
+            ${p.category_name ? `<dt>Category</dt><dd><a href="/shop?cat=${attr(p.category_slug)}">${esc(p.category_name)}</a></dd>` : ''}
+          </dl>
+        </aside>
+      </div>
+      ${related.length ? `<section class="section"><div class="section-head"><h2>You may also like</h2><a class="more" href="/shop?cat=${attr(p.category_slug)}">More in ${esc(p.category_name)} →</a></div><div class="grid">${related.map((r) => productCard(r, cur, ctx.csrf)).join('')}</div></section>` : ''}`;
     return page(ctx, p.name, body, { head: `<meta property="og:title" content="${attr(p.name)}"><meta property="og:image" content="${attr(imgUrl(p.image))}">` });
   });
 
@@ -202,7 +227,7 @@ export function createApp(opts = {}) {
         ${Number(ctx.settings.free_shipping_over_cents) > totals.subtotal && totals.shipping ? `<p class="muted small">Free shipping on orders over ${money(Number(ctx.settings.free_shipping_over_cents), cur)}.</p>` : ''}
         ${problems.length ? '<p class="muted small">Fix the issues above to check out.</p>' : `<a href="/checkout" class="btn primary block">Checkout</a>`}
         <a href="/shop" class="btn block">Continue shopping</a>
-      </aside></div>` : `<h1>Your cart</h1><p class="muted">Your cart is empty.</p><a href="/shop" class="btn primary">Start shopping</a>`;
+      </aside></div>` : `<div class="empty"><h1>Your cart is empty</h1><p class="muted">Find something you like and it will show up here.</p><a href="/shop" class="btn primary">Start shopping</a></div>`;
     return page(ctx, 'Cart', body);
   });
 
@@ -233,7 +258,7 @@ export function createApp(opts = {}) {
           <label>Phone <input name="phone" value="${v('phone')}"></label>
         </div>
         <label>Order notes <textarea name="notes" rows="2">${esc(values.notes || '')}</textarea></label>
-        <button class="btn primary block" type="submit">${live ? 'Continue to payment' : 'Continue to payment (test mode)'}</button>
+        <button class="btn primary block lg" type="submit">${ICONS.shield} ${live ? 'Continue to secure payment' : 'Continue to payment (test mode)'}</button>
         <p class="muted small">${live ? 'You will be redirected to our secure Stripe checkout to pay by card, Apple Pay, Google Pay, Link and other methods.' : 'Stripe is not configured, so a simulated payment page will be shown. No real charge is made.'}</p>
       </form>
       <aside class="summary card">

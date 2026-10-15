@@ -39,14 +39,20 @@ if (args['admin-email'] && args['admin-password'] && !db.adminExists(conn)) {
 const existing = new Map(db.listCategories(conn).map((c) => [c.name, c]));
 const cats = CATEGORIES.map((n) => existing.get(n) || db.createCategory(conn, n));
 let created = 0;
+let refreshed = 0;
 for (const p of PRODUCTS) {
-  if (db.getProductBySlug(conn, db.slugify(p.name))) continue;
+  const existing = db.getProductBySlug(conn, db.slugify(p.name));
+  if (existing) {
+    // --refresh-images: re-render the generated placeholder photos of previously seeded products
+    if ('refresh-images' in args) for (const img of existing.images) if (img.filename.startsWith('seed-')) { writeFileSync(join(uploads, img.filename), makePng(800, 600, p.color[0], p.color[1])); refreshed++; }
+    continue;
+  }
   const prod = db.createProduct(conn, { name: p.name, description: p.desc, price_cents: Math.round(p.price * 100), compare_price_cents: p.compare ? Math.round(p.compare * 100) : null,
     category_id: cats[p.cat].id, condition: p.cond, stock: p.stock, featured: !!p.featured });
   const file = `seed-${prod.slug}.png`;
-  writeFileSync(join(uploads, file), makePng(400, 300, p.color[0], p.color[1]));
+  writeFileSync(join(uploads, file), makePng(800, 600, p.color[0], p.color[1]));
   db.addImage(conn, prod.id, file);
   created++;
 }
-console.log(`Seeded ${created} products in ${cats.length} categories (${dataDir})`);
+console.log(`Seeded ${created} products in ${cats.length} categories (${dataDir})${refreshed ? `, refreshed ${refreshed} images` : ''}`);
 conn.close();
